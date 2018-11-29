@@ -4,6 +4,7 @@ import (
 	"github.com/paulmach/go.geojson"
 	m "github.com/murphy214/mercantile"
 	"math"
+	"github.com/murphy214/vector-tile-go"
 	"fmt"
 	"io/ioutil"
 )
@@ -35,10 +36,8 @@ func (slice *Slice) IntersectX(ax, ay, bx, by, x float64) float64 {
 		slice.Pos += 1
 		return 0.0
 	} else {
-		fmt.Println(t,ax,ay,bx,by,x,"here")
 		slice.Slice = append(slice.Slice,[]float64{x,ay + (by-ay)*t})
 		slice.Pos += 1
-		fmt.Println(slice.Slice)
 	}
 	return t
 }
@@ -276,7 +275,7 @@ func IsEmpty(geom geojson.Geometry) bool {
 }
 
 
-// clips a tile 
+// clips about a tile 
 func ClipTile(geom geojson.Geometry,tileid m.TileID) geojson.Geometry {
 	bds := m.Bounds(tileid)
 	geom = clip(geom,bds.W,bds.E,0)
@@ -285,7 +284,7 @@ func ClipTile(geom geojson.Geometry,tileid m.TileID) geojson.Geometry {
 }
 
 // clips down a tile level
-func ClipDown(geom geojson.Geometry,tileid m.TileID) map[m.TileID]geojson.Geometry {
+func ClipDownTile(geom geojson.Geometry,tileid m.TileID) map[m.TileID]geojson.Geometry {
 	bds := m.Bounds(tileid)	
 	cs := m.Children(tileid)
 	cbds := m.Bounds(cs[0])
@@ -295,7 +294,7 @@ func ClipDown(geom geojson.Geometry,tileid m.TileID) map[m.TileID]geojson.Geomet
 	l,r := clip(geom,bds.W,mx,0),clip(geom,mx,bds.E,0)
 	ld,lu := clip(l,bds.S,my,1),clip(l,my,bds.N,1)
 	rd,ru := clip(r,bds.S,my,1),clip(r,my,bds.N,1)
-	fmt.Println(bds.S,my,bds.N)
+	//fmt.Println(bds.S,my,bds.N)
 	lut,rut,rdt,ldt := cs[0],cs[1],cs[2],cs[3]
 
 	mymap := map[m.TileID]geojson.Geometry{
@@ -305,6 +304,7 @@ func ClipDown(geom geojson.Geometry,tileid m.TileID) map[m.TileID]geojson.Geomet
 		ldt:ld,
 	}
 
+	// cleaning the output rangemap if one of the geometries is empty
 	for k,v := range mymap {
 		if IsEmpty(v) {
 			delete(mymap,k)
@@ -314,6 +314,69 @@ func ClipDown(geom geojson.Geometry,tileid m.TileID) map[m.TileID]geojson.Geomet
 
 	return mymap
 }
+
+// gets the highest zoom where all 4 corners are withing the same tile
+func GetFirstZoom(bb m.Extrema) (int,m.TileID) {
+	corners := [][]float64{{bb.E,bb.N},{bb.E,bb.S},{bb.W,bb.N},{bb.W,bb.S}}
+	for i := 0; i < 30; i++ {
+		mymap := map[m.TileID]string{}
+		for _,corner := range corners {
+			mymap[m.Tile(corner[0],corner[1],i)] = ""
+		}
+
+		if len(mymap) > 1 {
+			return i - 1,m.Tile(corners[0][0],corners[0][1],i-1)
+		}
+	}
+	return 30,m.TileID{}
+}
+
+
+// [west, south, east, north]
+// clips a tile
+func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Feature {
+	geom := *feature.Geometry
+	bb := vt.Get_BoundingBox(&geom)
+	firstzoom,tileid := GetFirstZoom(m.Extrema{W:bb[0],S:bb[1],E:bb[2],N:bb[3]})
+	currentzoom := firstzoom
+	mymap := map[m.TileID]*geojson.Feature{tileid:feature} 
+	for currentzoom != endzoom {
+		var lastk m.TileID
+		for k,tempgeom := range mymap {
+			if int(k.Z) == currentzoom {
+				tmap := ClipDownTile(*tempgeom.Geometry,k)
+				for myk,addgeom := range tmap {
+					if (myk.Z) != 0 {
+						lastk = myk
+					}
+					feat2 := &geojson.Feature{Geometry:&geojson.Geometry{}}
+					feat2.Geometry.Type = addgeom.Type
+					switch feat2.Geometry.Type {
+					case "Point":
+						feat2.Geometry.Point = addgeom.Point
+					case "MultiPoint":
+						feat2.Geometry.MultiPoint = addgeom.MultiPoint
+					case "LineString":
+						feat2.Geometry.LineString = addgeom.LineString
+					case "MultiLineString":
+						feat2.Geometry.MultiLineString = addgeom.MultiLineString
+					case "Polygon":
+						feat2.Geometry.Polygon = addgeom.Polygon
+					case "MultiPolygon":
+						feat2.Geometry.MultiPolygon = addgeom.MultiPolygon
+					}					
+					feat2.Properties = feature.Properties
+
+					mymap[myk] = feat2
+				}
+				delete(mymap,k)
+			}
+		}
+		currentzoom = int(lastk.Z)
+	}
+
+	return mymap
+}	
 
 
 
@@ -364,7 +427,6 @@ func newfeatures(mymap map[m.TileID]geojson.Geometry,props map[string]interface{
 		case "MultiPolygon":
 			feat2.Geometry.MultiPolygon = geom.MultiPolygon
 		}
-		fmt.Println(geom.Polygon)
 		feat2.Properties = map[string]interface{}{}
 		for k,v := range props {
 			feat2.Properties[k] = v
@@ -384,13 +446,21 @@ func main() {
 	fs := readfeatures()
 	feature := fs[100]
 	feature.Properties["COLORKEY"] = "purple"
+
+	mymap := ClipFeature(feature,15)
+	feats := []*geojson.Feature{}
+	for _,v := range mymap {
+		feats = append(feats,v)
+	}
+	
+	/*
 	geom := *feature.Geometry
 	fpt := geom.Polygon[0][0]
 	tile := m.Parent(m.Tile(fpt[0],fpt[1],12))
 	newgeom := ClipTile(geom,tile)
-	imap := ClipDown(newgeom,tile)
-
-	feats := newfeatures(imap,feature.Properties)
+	imap := ClipDownTile(newgeom,tile)
+	*/
+	//feats := newfeatures(mymap,feature.Properties)
 	feats = append(feats,feature)
 	fmt.Println(feats)
 	makefeatures(feats,"a.geojson")
