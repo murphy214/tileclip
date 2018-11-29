@@ -7,6 +7,8 @@ import (
 	"github.com/murphy214/vector-tile-go"
 	"fmt"
 	"io/ioutil"
+	"time"
+	"math/rand"
 )
 
 type ClipGeom struct {
@@ -274,20 +276,99 @@ func IsEmpty(geom geojson.Geometry) bool {
 	return false
 }
 
+// makes a feature
+func makefeature(addgeom geojson.Geometry,prop map[string]interface{},id interface{}) *geojson.Feature {
+	feat2 := &geojson.Feature{Geometry:&geojson.Geometry{}}
+	feat2.Geometry.Type = addgeom.Type
+	switch feat2.Geometry.Type {
+	case "Point":
+		feat2.Geometry.Point = addgeom.Point
+	case "MultiPoint":
+		feat2.Geometry.MultiPoint = addgeom.MultiPoint
+	case "LineString":
+		feat2.Geometry.LineString = addgeom.LineString
+	case "MultiLineString":
+		feat2.Geometry.MultiLineString = addgeom.MultiLineString
+	case "Polygon":
+		if len(addgeom.Polygon[0][0]) == 8 && len(addgeom.BoundingBox) == 4{
+			bb := addgeom.BoundingBox
+			w,s,e,n := bb[0],bb[1],bb[2],bb[3]
+			poly := [][][]float64{{{e,n},{w,n},{w,s},{e,s},{e,n}}}
+			addgeom.Polygon = poly
+		}
+		feat2.Geometry.Polygon = addgeom.Polygon
+
+	case "MultiPolygon":
+		feat2.Geometry.MultiPolygon = addgeom.MultiPolygon
+	}
+	feat2.Properties = prop
+	feat2.ID = id
+	feat2.BoundingBox = vt.Get_BoundingBox(&addgeom)
+	return feat2
+}
+
 
 // clips about a tile 
-func ClipTile(geom geojson.Geometry,tileid m.TileID) geojson.Geometry {
+func ClipTile(feature *geojson.Feature,tileid m.TileID) *geojson.Feature {
+	addgeom := *feature.Geometry
 	bds := m.Bounds(tileid)
-	geom = clip(geom,bds.W,bds.E,0)
-	geom = clip(geom,bds.S,bds.N,1)
-	return geom
+	addgeom = clip(addgeom,bds.W,bds.E,0)
+	addgeom = clip(addgeom,bds.S,bds.N,1)
+	return makefeature(addgeom, feature.Properties,feature.ID)
+}
+// get bounds from tile	
+func getbounds(tileid m.TileID) []float64 {
+	bds := m.Bounds(tileid)
+	return []float64{bds.W,bds.S,bds.E,bds.N}
+}
+
+// 
+var squaregeom = geojson.Geometry{Type:"Polygon",Polygon:[][][]float64{{{100.0,100.0,100.0,100.0,100.0,100.0,100.0,100.0}}}}
+
+func getgeomsquaretile(tileid m.TileID) geojson.Geometry {
+	var val geojson.Geometry 
+	val.Type = squaregeom.Type
+	val.Polygon = squaregeom.Polygon
+	val.BoundingBox = getbounds(tileid)
+	return val
 }
 
 // clips down a tile level
 func ClipDownTile(geom geojson.Geometry,tileid m.TileID) map[m.TileID]geojson.Geometry {
+
 	bds := m.Bounds(tileid)	
 	cs := m.Children(tileid)
 	cbds := m.Bounds(cs[0])
+	if geom.Type == "Polygon" {
+		if len(geom.Polygon[0][0]) == 8 {
+			return map[m.TileID]geojson.Geometry{
+				cs[0]:getgeomsquaretile(cs[0]),
+				cs[1]:getgeomsquaretile(cs[1]),
+				cs[2]:getgeomsquaretile(cs[2]),
+				cs[3]:getgeomsquaretile(cs[3]),
+			}
+		}
+	}
+	if geom.Type == "Polygon" {
+		if len(geom.Polygon) == 1 {
+			if len(geom.Polygon[0]) == 4 || len(geom.Polygon[0]) == 5 {
+				bbb := vt.Get_BoundingBox(&geom)
+				bdsref := m.Extrema{W:bbb[0],S:bbb[1],E:bbb[2],N:bbb[3]}
+
+				if DeltaBounds(bdsref, bds) {
+					return map[m.TileID]geojson.Geometry{
+						cs[0]:getgeomsquaretile(cs[0]),
+						cs[1]:getgeomsquaretile(cs[1]),
+						cs[2]:getgeomsquaretile(cs[2]),
+						cs[3]:getgeomsquaretile(cs[3]),
+					}
+				}
+		
+			}
+		}
+	}
+
+
 
 	mx,my := cbds.E,cbds.S
 	
@@ -331,6 +412,11 @@ func GetFirstZoom(bb m.Extrema) (int,m.TileID) {
 	return 30,m.TileID{}
 }
 
+// bool for whether the bds are the same
+func DeltaBounds(bds1,bds2 m.Extrema) bool {
+	de,dw,dn,ds := math.Abs(bds1.E - bds2.E),math.Abs(bds1.W - bds2.W),math.Abs(bds1.N - bds2.N),math.Abs(bds1.S - bds2.S)
+	return dw < Power7 && de < Power7 && dn < Power7 && ds < Power7
+}
 
 // [west, south, east, north]
 // clips a tile
@@ -349,25 +435,7 @@ func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Fea
 					if (myk.Z) != 0 {
 						lastk = myk
 					}
-					feat2 := &geojson.Feature{Geometry:&geojson.Geometry{}}
-					feat2.Geometry.Type = addgeom.Type
-					switch feat2.Geometry.Type {
-					case "Point":
-						feat2.Geometry.Point = addgeom.Point
-					case "MultiPoint":
-						feat2.Geometry.MultiPoint = addgeom.MultiPoint
-					case "LineString":
-						feat2.Geometry.LineString = addgeom.LineString
-					case "MultiLineString":
-						feat2.Geometry.MultiLineString = addgeom.MultiLineString
-					case "Polygon":
-						feat2.Geometry.Polygon = addgeom.Polygon
-					case "MultiPolygon":
-						feat2.Geometry.MultiPolygon = addgeom.MultiPolygon
-					}					
-					feat2.Properties = feature.Properties
-
-					mymap[myk] = feat2
+					mymap[myk] = makefeature(addgeom,feature.Properties,feature.ID)
 				}
 				delete(mymap,k)
 			}
@@ -381,8 +449,8 @@ func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Fea
 
 
 
-func readfeatures() []*geojson.Feature {
-	bs,_ := ioutil.ReadFile("county.geojson")
+func readfeatures(filename string) []*geojson.Feature {
+	bs,_ := ioutil.ReadFile(filename)
 	fc,_ := geojson.UnmarshalFeatureCollection(bs)
 	return fc.Features
 }
@@ -443,16 +511,33 @@ func newfeatures(mymap map[m.TileID]geojson.Geometry,props map[string]interface{
 
 
 func main() {
-	fs := readfeatures()
-	feature := fs[100]
-	feature.Properties["COLORKEY"] = "purple"
+	fs := readfeatures("wv.geojson")
 
-	mymap := ClipFeature(feature,15)
-	feats := []*geojson.Feature{}
-	for _,v := range mymap {
-		feats = append(feats,v)
+	colors := []string{"red","blue","light green","cyan","orange","purple","green"}
+	randomcolor := func() string {
+		return colors[rand.Intn(len(colors))]
 	}
-	
+	feats := []*geojson.Feature{}
+	colormap := map[m.TileID]string{}
+	for _,feature := range fs[:10] {
+
+		feature.ID = "shitttt"
+		feature.Properties["COLORKEY"] = randomcolor()
+		s := time.Now()
+
+		mymap := ClipFeature(feature,12)
+		fmt.Println(time.Now().Sub(s),len(mymap))
+		for k,v := range mymap {
+			color,boolval := colormap[k]
+			if !boolval {
+				color = randomcolor()
+				colormap[k] = color
+			}
+			v.Properties["COLORKEY"] = color
+			feats = append(feats,v)
+		}
+		feats = append(feats,feature)
+	}
 	/*
 	geom := *feature.Geometry
 	fpt := geom.Polygon[0][0]
@@ -461,8 +546,7 @@ func main() {
 	imap := ClipDownTile(newgeom,tile)
 	*/
 	//feats := newfeatures(mymap,feature.Properties)
-	feats = append(feats,feature)
-	fmt.Println(feats)
+	//feats = append(feats,feature)
 	makefeatures(feats,"a.geojson")
 
 }
