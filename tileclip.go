@@ -1,4 +1,10 @@
-package main
+package tileclip
+
+/*
+
+A general library for clipping about tiles. 
+
+*/
 
 import (
 	"github.com/paulmach/go.geojson"
@@ -7,8 +13,6 @@ import (
 	"github.com/murphy214/vector-tile-go"
 	"fmt"
 	"io/ioutil"
-	"time"
-	"math/rand"
 )
 
 type ClipGeom struct {
@@ -276,6 +280,81 @@ func IsEmpty(geom geojson.Geometry) bool {
 	return false
 }
 
+// handles the point clipping about a given tile
+func PointClipAboutTile(feature *geojson.Feature,tileid m.TileID) *geojson.Feature {
+	if feature.Geometry.Type == "Point" {
+		checktileid := m.Tile(feature.Geometry.Point[0],feature.Geometry.Point[1],int(tileid.Z))
+		if m.IsEqual(checktileid,tileid) {
+			feature.Properties["TILEID"] = tileid
+			return feature
+		}
+		
+		return &geojson.Feature{}
+	} else if feature.Geometry.Type == "MultiPoint" {
+		newpoints := [][]float64{}
+		for _,pt := range feature.Geometry.MultiPoint {
+			checktileid := m.Tile(pt[0],pt[1],int(tileid.Z))
+			if m.IsEqual(checktileid,tileid) {
+				newpoints = append(newpoints,pt)
+			}
+		}
+		if len(newpoints) > 0 {
+			if len(newpoints) == 0 {
+				newfeature := geojson.NewPointFeature(newpoints[0])
+				newfeature.Properties = feature.Properties
+				newfeature.Properties["TILEID"] = tileid
+				return newfeature
+			} else {
+				newfeature := geojson.NewMultiPointFeature(newpoints...)
+				newfeature.Properties = feature.Properties
+				newfeature.Properties["TILEID"] = tileid
+				return newfeature
+			}
+		}
+	}
+	return &geojson.Feature{}
+
+}
+
+
+// handles the point clipping about a given tile
+func PointClipAboutZoom(feature *geojson.Feature,zoom int) map[m.TileID]*geojson.Feature {
+	if feature.Geometry.Type == "Point" {
+		checktileid := m.Tile(feature.Geometry.Point[0],feature.Geometry.Point[1],zoom)
+		feature.Properties["TILEID"] = checktileid
+		return map[m.TileID]*geojson.Feature{checktileid:feature}
+		
+		
+		return map[m.TileID]*geojson.Feature{}
+	} else if feature.Geometry.Type == "MultiPoint" {
+		newpoints := map[m.TileID][][]float64{}
+		for _,pt := range feature.Geometry.MultiPoint {
+			checktileid := m.Tile(pt[0],pt[1],zoom)
+				newpoints[checktileid] = append(newpoints[checktileid],pt)
+		}
+		totalmap := map[m.TileID]*geojson.Feature{}
+		for k,newpoints2 := range newpoints {	
+			if len(newpoints2) > 0 {
+				if len(newpoints2) == 0 {
+					newfeature := geojson.NewPointFeature(newpoints2[0])
+					newfeature.Properties = feature.Properties
+					newfeature.Properties["TILEID"] = k
+					totalmap[k] = newfeature
+				} else {
+					newfeature := geojson.NewMultiPointFeature(newpoints2...)
+					newfeature.Properties = feature.Properties
+					newfeature.Properties["TILEID"] = k
+					totalmap[k] = newfeature
+				}
+			}
+		}
+		return totalmap
+	}
+	return map[m.TileID]*geojson.Feature{}
+
+}
+
+
 // makes a feature
 func makefeature(addgeom geojson.Geometry,prop map[string]interface{},id interface{}) *geojson.Feature {
 	feat2 := &geojson.Feature{Geometry:&geojson.Geometry{}}
@@ -310,6 +389,10 @@ func makefeature(addgeom geojson.Geometry,prop map[string]interface{},id interfa
 
 // clips about a tile 
 func ClipTile(feature *geojson.Feature,tileid m.TileID) *geojson.Feature {
+	gtype := string(feature.Geometry.Type)
+	if gtype == "Point" || gtype == "MultiPoint" {
+		return PointClipAboutTile(feature, tileid)
+	} 
 	addgeom := *feature.Geometry
 	bds := m.Bounds(tileid)
 	addgeom = clip(addgeom,bds.W,bds.E,0)
@@ -409,7 +492,7 @@ func GetFirstZoom(bb m.Extrema) (int,m.TileID) {
 			return i - 1,m.Tile(corners[0][0],corners[0][1],i-1)
 		}
 	}
-	return 30,m.TileID{}
+	return 30,m.TileID{0,0,30}
 }
 
 // bool for whether the bds are the same
@@ -421,12 +504,26 @@ func DeltaBounds(bds1,bds2 m.Extrema) bool {
 // [west, south, east, north]
 // clips a tile
 func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Feature {
+	gtype := string(feature.Geometry.Type)
+	if gtype == "Point" || gtype == "MultiPoint" {
+		return PointClipAboutZoom(feature, endzoom)
+	} 
 	geom := *feature.Geometry
 	bb := vt.Get_BoundingBox(&geom)
 	firstzoom,tileid := GetFirstZoom(m.Extrema{W:bb[0],S:bb[1],E:bb[2],N:bb[3]})
 	currentzoom := firstzoom
 	mymap := map[m.TileID]*geojson.Feature{tileid:feature} 
-	for currentzoom != endzoom {
+
+	if currentzoom >= endzoom {
+		for int(tileid.Z) != endzoom {
+			tileid = m.Parent(tileid)
+		}
+		mymap[tileid] = makefeature(*feature.Geometry,feature.Properties,feature.ID)
+		currentzoom = endzoom
+	}
+
+
+	for currentzoom < endzoom {
 		var lastk m.TileID
 		for k,tempgeom := range mymap {
 			if int(k.Z) == currentzoom {
@@ -449,13 +546,13 @@ func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Fea
 
 
 
-func readfeatures(filename string) []*geojson.Feature {
+func ReadFeatures(filename string) []*geojson.Feature {
 	bs,_ := ioutil.ReadFile(filename)
 	fc,_ := geojson.UnmarshalFeatureCollection(bs)
 	return fc.Features
 }
 
-func makefeatures(feats []*geojson.Feature,filename string) {
+func MakeFeatures(feats []*geojson.Feature,filename string) {
 	fc := geojson.NewFeatureCollection()
 	fc.Features = feats
 	s,err := fc.MarshalJSON()
@@ -465,7 +562,7 @@ func makefeatures(feats []*geojson.Feature,filename string) {
 
 
 
-func newfeature(geom geojson.Geometry,props map[string]interface{}) *geojson.Feature {
+func NewFeature(geom geojson.Geometry,props map[string]interface{}) *geojson.Feature {
 	feat2 := geojson.NewFeature(&geom)
 	feat2.Properties = map[string]interface{}{}
 	for k,v := range props {
@@ -475,7 +572,7 @@ func newfeature(geom geojson.Geometry,props map[string]interface{}) *geojson.Fea
 	return feat2
 }
 
-func newfeatures(mymap map[m.TileID]geojson.Geometry,props map[string]interface{}) []*geojson.Feature {
+func NewFeatures(mymap map[m.TileID]geojson.Geometry,props map[string]interface{}) []*geojson.Feature {
 	feats := make([]*geojson.Feature,len(mymap))
 	i := 0
 	for k,geom := range mymap {
@@ -505,48 +602,4 @@ func newfeatures(mymap map[m.TileID]geojson.Geometry,props map[string]interface{
 		i++
 	}
 	return feats
-}
-
-
-
-
-func main() {
-	fs := readfeatures("wv.geojson")
-
-	colors := []string{"red","blue","light green","cyan","orange","purple","green"}
-	randomcolor := func() string {
-		return colors[rand.Intn(len(colors))]
-	}
-	feats := []*geojson.Feature{}
-	colormap := map[m.TileID]string{}
-	for _,feature := range fs[:10] {
-
-		feature.ID = "shitttt"
-		feature.Properties["COLORKEY"] = randomcolor()
-		s := time.Now()
-
-		mymap := ClipFeature(feature,12)
-		fmt.Println(time.Now().Sub(s),len(mymap))
-		for k,v := range mymap {
-			color,boolval := colormap[k]
-			if !boolval {
-				color = randomcolor()
-				colormap[k] = color
-			}
-			v.Properties["COLORKEY"] = color
-			feats = append(feats,v)
-		}
-		feats = append(feats,feature)
-	}
-	/*
-	geom := *feature.Geometry
-	fpt := geom.Polygon[0][0]
-	tile := m.Parent(m.Tile(fpt[0],fpt[1],12))
-	newgeom := ClipTile(geom,tile)
-	imap := ClipDownTile(newgeom,tile)
-	*/
-	//feats := newfeatures(mymap,feature.Properties)
-	//feats = append(feats,feature)
-	makefeatures(feats,"a.geojson")
-
 }
