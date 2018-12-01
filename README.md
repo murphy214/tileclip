@@ -1,5 +1,4 @@
-# tileclip - Simple web-mercator tile set clipping library for cutting features into tiles effectiently
-
+# tileclip - A Simple Tile Clipping Library
 
 ### What is it?
 
