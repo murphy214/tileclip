@@ -68,7 +68,7 @@ func ClipTile(feature *geojson.Feature,mercantile m.TileID) *geojson.Feature
 ClipFeature clips a feature at a defined endzoom and then collects all tiles with that given endzoom created. Keep_parents is a bool that determines wheter or not to delete the parent or upper tile k/v sets for the returned tilemap. 
 
 ```golang
-func ClipTile(feature *geojson.Feature,endzoom int,keep_parents bool) map[m.TileID]*geojson.Feature
+func ClipFeature(feature *geojson.Feature,endzoom int,keep_parents bool) map[m.TileID]*geojson.Feature
 ```
 
 
