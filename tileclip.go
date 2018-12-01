@@ -2,7 +2,7 @@ package tileclip
 
 /*
 
-A general library for clipping about tiles. 
+A simple library for clipping about tiles. 
 
 */
 
@@ -96,13 +96,10 @@ func (input *ClipGeom) clipLine() {
 		exited := false
 
 		if a <= k1 {
-			// ---|-->  | (line enters the clip region from the left)
 			if b >= k1 {
 				slice.Intersect(ax, ay, bx, by, k1)
-				//if (trackMetrics) slice.start = len + segLen * t;
 			}
 		} else if a >= k2 {
-			// |  <--|--- (line enters the clip region from the right)
 			if b <= k2 {
 				slice.Intersect(ax, ay, bx, by, k2)
 			}
@@ -110,12 +107,10 @@ func (input *ClipGeom) clipLine() {
 			slice.AddPoint(ax, ay)
 		}
 		if b < k1 && a >= k1 {
-			// <--|---  | or <--|-----|--- (line exits the clip region on the left)
 			slice.Intersect(ax, ay, bx, by, k1)
 			exited = true
 		}
 		if b > k2 && a <= k2 {
-			// |  ---|--> or ---|-----|--> (line exits the clip region on the right)
 			slice.Intersect(ax, ay, bx, by, k2)
 			exited = true
 		}
@@ -141,7 +136,6 @@ func (input *ClipGeom) clipLine() {
 		slice.AddPoint(ax, ay)
 	}
 
-	// close the polygon if its endpoints are not the same after clipping
 	last = len(slice.Slice) - 1
 	if input.IsPolygon && last >= 3 && (slice.Slice[last][0] != slice.Slice[0][0] || slice.Slice[last][1] != slice.Slice[0][1]) {
 		slice.AddPoint(slice.Slice[0][0],slice.Slice[0][1])
@@ -501,9 +495,12 @@ func DeltaBounds(bds1,bds2 m.Extrema) bool {
 	return dw < Power7 && de < Power7 && dn < Power7 && ds < Power7
 }
 
-// [west, south, east, north]
-// clips a tile
-func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Feature {
+// clips about a given end zoom
+// if keep_parents is true all the parent tiles / features will be returned in the 
+// output map 
+// currently can't dictate where to start zoom so kind of annoying 
+// will have to clean up for that later
+func ClipFeature(feature *geojson.Feature,endzoom int,keep_parents bool) map[m.TileID]*geojson.Feature {
 	gtype := string(feature.Geometry.Type)
 	if gtype == "Point" || gtype == "MultiPoint" {
 		return PointClipAboutZoom(feature, endzoom)
@@ -522,7 +519,7 @@ func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Fea
 		currentzoom = endzoom
 	}
 
-
+	// collecting output maps and writing to a subsequent map
 	for currentzoom < endzoom {
 		var lastk m.TileID
 		for k,tempgeom := range mymap {
@@ -534,17 +531,19 @@ func ClipFeature(feature *geojson.Feature,endzoom int) map[m.TileID]*geojson.Fea
 					}
 					mymap[myk] = makefeature(addgeom,feature.Properties,feature.ID)
 				}
-				delete(mymap,k)
+
+				// from the keep_parents config
+				if !keep_parents {
+					delete(mymap,k)
+				}
 			}
 		}
+		// setting the proper current zoom
 		currentzoom = int(lastk.Z)
 	}
 
 	return mymap
 }	
-
-
-
 
 func ReadFeatures(filename string) []*geojson.Feature {
 	bs,_ := ioutil.ReadFile(filename)
